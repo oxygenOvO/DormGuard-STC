@@ -158,8 +158,10 @@ SetBeep(1200, 100);
 #define HALL_SOFT_TEST  0
 #define VIB_SOFT_TEST   0
 #define STATE_SOFT_TEST 0
-#define UART_SOFT_TEST  1
+#define UART_SOFT_TEST  0
 ```
+
+当前为真实硬件联调配置。软件测试代码仍保留；需要单独运行某项软件测试时，只启用对应宏，并保证其余测试宏为 `0`。
 
 状态机测试直接调用 Hall/Vib 软件处理函数和安全控制函数，不伪造 BSP。十项测试覆盖：默认撤防、UNKNOWN/OPEN 拒绝布防、CLOSED 成功布防、门报警、撤防、Vib 报警、关门 RESET、开门拒绝 RESET，以及撤防期间旧 Vib 不得污染后续布防。
 
@@ -244,7 +246,7 @@ Hall 状态真正变化时同时设置 `door_changed` 和独立的 `door_report_
 
 ### UART 软件测试
 
-当前启用 `UART_SOFT_TEST = 1`，`send_protocol_message()` 只记录 `last_tx_message`、`tx_message_count` 和各消息计数，不调用真实 UART BSP。七项测试覆盖：ARM成功、OPEN拒绝ARM、DISARM、Door报警一次上报、Vib报警一次上报、未知命令忽略，以及门 OPEN/CLOSE 变化各上报一次。
+UART 软件测试代码仍保留。将 `UART_SOFT_TEST` 临时设置为 `1` 后，`send_protocol_message()` 只记录 `last_tx_message`、`tx_message_count` 和各消息计数，不调用真实 UART BSP。七项测试覆盖：ARM成功、OPEN拒绝ARM、DISARM、Door报警一次上报、Vib报警一次上报、未知命令忽略，以及门 OPEN/CLOSE 变化各上报一次。当前联调版本设置为 `UART_SOFT_TEST = 0`，使用真实 UART2 BSP。
 
 Keil 调试器预期：
 
@@ -273,3 +275,31 @@ UART_SOFT_TEST  = 0
 5. 第一版单字节协议没有校验、序号或 ACK 机制。
 
 UART软件逻辑和心跳调度已经实现，A 板物理层已迁移到 UART2/EXT；尚未完成 A↔B 实机串口联调。课程参考工程在 UART2/485 模式下验证了 1200 bps，BSP 接口本身允许为 EXT 模式设置相同波特率；EXT 模式下的 1200 bps 仍需两板实测确认。
+
+## A/B Hardware Link Test
+
+联调参数：UART2、EXT TTL、1200 bps、8 数据位、1 停止位、无奇偶校验。
+
+`SetUart2Rxd(&uart_rx_byte, 1, 0, 0)` 只在初始化阶段设置一次。BSP V3.6b 说明指出，UART2 接收事件的用户回调返回后，系统才接收下一个数据包；课程 UART2 接收示例同样没有在回调中重新调用 `SetUart2Rxd()`。因此当前回调不重复挂载接收缓冲区。
+
+Keil Watch 诊断变量：
+
+- `uart_rx_count`：真实 UART2 接收回调次数；
+- `uart_tx_success_count`：`Uart2Print()` 成功接受发送请求的次数；
+- `uart_tx_drop_count`：发送队列已满导致消息无法入队的次数；
+- `uart_last_rx_byte`：最近一次真实接收的字节；
+- `uart_last_tx_byte`：最近一次成功启动发送的字节。
+
+最小联调链路：
+
+```text
+A -> B: 0xC1  MSG_HEARTBEAT，每秒一次
+B -> A: 0xA2  CMD_DISARM
+A -> B: 0xB2  MSG_DISARM_OK
+```
+
+先让 B 板连续接收 A 板心跳至少 10 秒，确认 A 板的 `uart_tx_success_count` 持续增加、`uart_last_tx_byte == 0xC1` 且 `uart_tx_drop_count == 0`。随后由 B 板发送 `0xA2` 至少 10 次；每次应使 `uart_rx_count` 增加、`uart_last_rx_byte == 0xA2`，并让 A 板恰好返回一个 `0xB2`。
+
+没有磁铁不影响上述 UART 基础联调。第一次测试不要使用 `CMD_ARM (0xA1)`：上电时 `door_state` 很可能为 UNKNOWN，按安全规则拒绝布防是正确行为，不能据此判断串口故障。
+
+8 字节 TX 队列在当前正常负载下是合理的：基础负载只有每秒 1 字节心跳，100 ms 服务周期理论上最多启动每秒 10 个单字节发送。门状态、报警和命令响应可能短时叠加，因此联调期间必须持续观察 `uart_tx_drop_count`；若其保持为 `0`，本阶段不调整队列。

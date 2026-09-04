@@ -68,7 +68,7 @@ typedef enum
 #define HALL_SOFT_TEST 0
 #define VIB_SOFT_TEST  0
 #define STATE_SOFT_TEST 0
-#define UART_SOFT_TEST 1
+#define UART_SOFT_TEST 0
 
 #define HALL_TEST_1_FAILED 0x01
 #define HALL_TEST_2_FAILED 0x02
@@ -125,6 +125,10 @@ unsigned char uart_tx_head = 0;
 unsigned char uart_tx_tail = 0;
 unsigned char uart_tx_count = 0;
 unsigned char uart_tx_drop_count = 0;
+unsigned int uart_rx_count = 0;
+unsigned int uart_tx_success_count = 0;
+unsigned char uart_last_rx_byte = 0;
+unsigned char uart_last_tx_byte = 0;
 
 #if HALL_SOFT_TEST
 unsigned char hall_soft_test_failures = 0;
@@ -255,6 +259,8 @@ void service_uart_tx(void)
         uart_tx_byte = uart_tx_queue[uart_tx_head];
         if (Uart2Print(&uart_tx_byte, 1) == enumUart2TxOK)
         {
+            uart_last_tx_byte = uart_tx_byte;
+            uart_tx_success_count++;
             uart_tx_head++;
             if (uart_tx_head >= UART_TX_QUEUE_SIZE)
             {
@@ -338,6 +344,8 @@ void process_protocol_reports(void)
 
 void uart_receive_callback(void)
 {
+    uart_last_rx_byte = uart_rx_byte;
+    uart_rx_count++;
     process_uart_command(uart_rx_byte);
 }
 
