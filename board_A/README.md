@@ -157,7 +157,8 @@ SetBeep(1200, 100);
 ```c
 #define HALL_SOFT_TEST  0
 #define VIB_SOFT_TEST   0
-#define STATE_SOFT_TEST 1
+#define STATE_SOFT_TEST 0
+#define UART_SOFT_TEST  1
 ```
 
 状态机测试直接调用 Hall/Vib 软件处理函数和安全控制函数，不伪造 BSP。十项测试覆盖：默认撤防、UNKNOWN/OPEN 拒绝布防、CLOSED 成功布防、门报警、撤防、Vib 报警、关门 RESET、开门拒绝 RESET，以及撤防期间旧 Vib 不得污染后续布防。
@@ -168,7 +169,7 @@ SetBeep(1200, 100);
 - `state_soft_test_failures == 0`：十项测试全部通过；
 - 非零结果的 bit0～bit9 分别表示 TEST S1～TEST S10 失败。
 
-正式硬件测试前必须将 `HALL_SOFT_TEST`、`VIB_SOFT_TEST`、`STATE_SOFT_TEST` 全部设置为 `0`，从而恢复真实 Hall/Vib 初始化和事件回调。
+独立状态机测试时应将 `STATE_SOFT_TEST` 设置为 `1`、其他测试宏设置为 `0`。正式硬件测试前必须将四个测试宏全部设置为 `0`，从而恢复真实 Hall/Vib/UART 初始化和事件回调。
 
 ### 完成状态
 
@@ -176,7 +177,7 @@ SetBeep(1200, 100);
 - 蜂鸣器报警执行层：已实现，待 Keil C51 和实机验证；
 - Hall 物理测试：仍待磁铁；
 - Vib 物理测试：仍待实机确认；
-- UART：尚未实现；
+- UART：协议接入和软件测试已实现，双板联调待完成；
 - Heartbeat：尚未实现。
 
 统一 LED 位分配现为：
@@ -188,3 +189,75 @@ bit2 / 0x04：Vib 报警来源
 bit3 / 0x08：ARMED
 bit4 / 0x10：ALARM
 ```
+
+## UART Communication
+
+A 板仅通过 UART1 与 B 板通信，PC 不直接连接 A 板。当前沿用课程完整 BSP 示例中实际使用的 `1200 bps`，通信格式由 BSP 固定为 8 数据位、1 停止位、无奇偶校验。B 板必须使用完全相同的串口配置。
+
+真实 BSP 接口：
+
+- `Uart1Init(1200)`：初始化 UART1；
+- `SetUart1Rxd(&uart_rx_byte, 1, 0, 0)`：配置无帧头匹配的单字节接收；
+- `enumEventUart1Rxd`：收到一个字节后的回调事件；
+- `Uart1Print(&uart_tx_byte, 1)`：非阻塞发送一个字节；
+- `GetUart1TxStatus()`：发送前确认 UART1 空闲。
+
+UART 接收回调只读取 BSP 已写入的全局 `uart_rx_byte`，再调用 `process_uart_command()`。命令处理与安全状态机解耦：
+
+- `CMD_ARM (0xA1)`：调用 `security_arm()`；成功发送 `MSG_ARM_OK`，门为 OPEN 时失败并发送 `MSG_DOOR_OPEN`；
+- `CMD_DISARM (0xA2)`：调用 `security_disarm()`，然后发送 `MSG_DISARM_OK`；
+- `CMD_RESET (0xA3)`：调用 `security_reset_alarm()`，当前协议没有 RESET 响应；
+- 其他字节：忽略。
+
+发送层使用 8 字节小型非阻塞队列。队列中的全局 `uart_tx_byte` 在 BSP 完成异步发送前保持有效；队列满时递增 `uart_tx_drop_count`。每个100 ms周期最多启动一个新字节发送。
+
+### 主动上报与去重
+
+Hall 状态真正变化时同时设置 `door_changed` 和独立的 `door_report_pending`。状态机可以消费前者，UART仍通过后者看到同一次变化：
+
+- CLOSED：发送一次 `MSG_DOOR_CLOSE (0xB4)`；
+- OPEN：发送一次 `MSG_DOOR_OPEN (0xB3)`。
+
+`alarm_reported_flags` 独立记录已经排队上报的报警原因：
+
+- Door 原因首次出现：发送一次 `MSG_DOOR_ALARM (0xB5)`；
+- Vib 原因首次出现：发送一次 `MSG_VIB_ALARM (0xB6)`；
+- 同一锁存报警期间不重复发送；
+- 后续出现另一种原因时仍会单独发送；
+- ARM、DISARM 或成功 RESET 会清除去重标志。
+
+### Heartbeat
+
+使用真实 `enumEventSys1S` 周期事件，每秒将 `MSG_HEARTBEAT (0xC1)` 加入发送队列，不使用阻塞 delay。A 板只负责发送；超时和在线判断由 B 板负责。
+
+### UART 软件测试
+
+当前启用 `UART_SOFT_TEST = 1`，`send_protocol_message()` 只记录 `last_tx_message`、`tx_message_count` 和各消息计数，不调用真实 UART BSP。七项测试覆盖：ARM成功、OPEN拒绝ARM、DISARM、Door报警一次上报、Vib报警一次上报、未知命令忽略，以及门 OPEN/CLOSE 变化各上报一次。
+
+Keil 调试器预期：
+
+```text
+uart_soft_test_completed == 1
+uart_soft_test_failures  == 0
+```
+
+正式双板测试前将：
+
+```text
+HALL_SOFT_TEST  = 0
+VIB_SOFT_TEST   = 0
+STATE_SOFT_TEST = 0
+UART_SOFT_TEST  = 0
+```
+
+### 当前协议缺口
+
+以下情况暂不新增消息值，等待三人共同确认协议：
+
+1. ARM + UNKNOWN 没有专用失败响应；
+2. ALARM 状态下 ARM 失败没有专用响应；
+3. CMD_RESET 没有 RESET_OK；
+4. CMD_RESET 没有 RESET_FAILED；
+5. 第一版单字节协议没有校验、序号或 ACK 机制。
+
+UART软件逻辑和心跳调度已经实现，尚未完成 A↔B 实机串口联调。
