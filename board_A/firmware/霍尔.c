@@ -6,48 +6,82 @@
 code unsigned long SysClock = 11059200;
 
 #ifdef _displayer_H_
-code char decode_table[]={0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f, 0x00, 0x08, 0x40, 0x01, 0x76, 0x38};
-                   /*序号： 0     1     2     3     4     5     6     7     8     9     10    11    12    13    14    15   */
-                   /*显示： 0     1     2     3     4     5     6     7     8     9   （无）  下-   中-   上-    H     L    */
-#endef
+code char decode_table[] = {
+    0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07,
+    0x7f, 0x6f, 0x00, 0x08, 0x40, 0x01, 0x76, 0x38
+};
+#endif
 
-char ch[8]={0x0f, 0x1e, 0x3c, 0x78, 0xf0, 0xe1, 0xc3, 0x87};
-int sum = 0;
-char flag = 0;
-
-void my100ms_callback()
+typedef enum
 {
-	if(flag)
-	{
-		if(sum == 8) sum = 0;
-		LedPrint(ch[sum]);
-		sum++;
-	}
-	else
-	{
-		LedPrint(0);
-		sum = 0;
-	}
+    DOOR_STATE_UNKNOWN = 0,
+    DOOR_STATE_CLOSED,
+    DOOR_STATE_OPEN
+} DoorState;
+
+#define LED_DOOR_UNKNOWN 0x00
+#define LED_DOOR_CLOSED  0x01
+#define LED_DOOR_OPEN    0x02
+
+DoorState door_state = DOOR_STATE_UNKNOWN;
+unsigned char door_changed = 0;
+
+void door_led_100ms_callback(void)
+{
+    if (door_state == DOOR_STATE_CLOSED)
+    {
+        LedPrint(LED_DOOR_CLOSED);
+    }
+    else if (door_state == DOOR_STATE_OPEN)
+    {
+        LedPrint(LED_DOOR_OPEN);
+    }
+    else
+    {
+        LedPrint(LED_DOOR_UNKNOWN);
+    }
 }
 
-void myhall()
+void hall_callback(void)
 {
-	if(GetHallAct() == enumHallGetClose) flag = 1;
-	else flag = 0;
+    unsigned char hall_action;
+    DoorState new_state;
+
+    hall_action = GetHallAct();
+    new_state = door_state;
+
+    /* This mapping assumes the magnet is near Hall when the door is closed. */
+    if (hall_action == enumHallGetClose)
+    {
+        new_state = DOOR_STATE_CLOSED;
+    }
+    else if (hall_action == enumHallGetAway)
+    {
+        new_state = DOOR_STATE_OPEN;
+    }
+
+    if (new_state != door_state)
+    {
+        door_state = new_state;
+        door_changed = 1;
+    }
 }
 
-void main()
+void main(void)
 {
-	DisplayerInit();
-	HallInit();
-	SetDisplayerArea(0,7);
-	Seg7Print(10,10,10,10,10,10,10,10);
-	LedPrint(0);
-	SetEventCallBack(enumEventSys100mS,my100ms_callback);
-	SetEventCallBack(enumEventHall,myhall);
-	MySTC_Init();
-	while(1)
-	{
-		MySTC_OS();
-	}
+    DisplayerInit();
+    HallInit();
+    SetDisplayerArea(0, 7);
+    Seg7Print(10, 10, 10, 10, 10, 10, 10, 10);
+    LedPrint(LED_DOOR_UNKNOWN);
+
+    SetEventCallBack(enumEventSys100mS, door_led_100ms_callback);
+    SetEventCallBack(enumEventHall, hall_callback);
+
+    MySTC_Init();
+
+    while (1)
+    {
+        MySTC_OS();
+    }
 }
