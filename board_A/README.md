@@ -31,7 +31,7 @@ enumHallGetAway  -> DOOR_STATE_OPEN
 
 LED 调试反馈使用真实接口 `LedPrint()`：UNKNOWN 为 `0x00`（全灭），CLOSED 为 `0x01`（LED1），OPEN 为 `0x02`（LED2）。LED 位序也应随门磁映射一起完成一次实机确认。
 
-当前阶段只实现 Hall 门状态采集和 LED 调试，不包含 Vib、蜂鸣器报警、完整状态机、UART 或心跳。
+Hall 阶段实现了门状态采集和 LED 调试；后续阶段在此基础上继续加入 Vib 与安全状态机，尚不包含 UART 或心跳。
 
 ### Hall 软件逻辑状态
 
@@ -41,11 +41,11 @@ LED 调试反馈使用真实接口 `LedPrint()`：UNKNOWN 为 `0x00`（全灭）
 
 `process_hall_action()` 独立负责把 BSP Hall 事件转换成门状态。真实 `hall_callback()` 只调用一次 `GetHallAct()`，再把读取结果交给该函数。`enumHallNull` 不改变状态；只有新状态与当前状态不同时，才将 `door_changed` 置为 `1`。
 
-`door_changed` 表示存在尚未处理的门状态变化。未来状态机处理完变化后必须将其清零；当前软件测试会在每个测试步骤之间显式清零。
+`door_changed` 表示存在尚未处理的门状态变化。当前安全状态机处理完变化后将其清零；独立 Hall 软件测试会在每个测试步骤之间显式清零。
 
 ### 软件模拟测试
 
-`霍尔.c` 中的 `HALL_SOFT_TEST` 默认为 `1`。测试模式直接向 `process_hall_action()` 依次输入 Close、重复 Close、Away、Null、Close，不注册真实 Hall 回调，也不修改 BSP。
+将 `HALL_SOFT_TEST` 设置为 `1` 可运行独立 Hall 测试。该模式直接向 `process_hall_action()` 依次输入 Close、重复 Close、Away、Null、Close，不注册真实 Hall 回调，也不修改 BSP。当前状态机测试模式下该宏为 `0`。
 
 在 Keil 调试器中观察：
 
@@ -89,7 +89,7 @@ LED 调试反馈使用真实接口 `LedPrint()`：UNKNOWN 为 `0x00`（全灭）
 
 `vib_event` 表示一个尚未消费的振动软件事件。`clear_vib_event()` 用于在测试或未来状态机处理完成后清除该标志。`vib_event_count` 用于累计 BSP 报告的有效振动次数。
 
-当前 `VIB_SOFT_TEST` 为 `1`，内置三项软件测试：首次 Quake、消费后再次 Quake、Null 不误触发。在 Keil 调试器中观察：
+将 `VIB_SOFT_TEST` 设置为 `1` 可运行三项独立软件测试：首次 Quake、消费后再次 Quake、Null 不误触发。当前状态机测试模式下该宏为 `0`。在 Keil 调试器中观察：
 
 - `vib_soft_test_completed == 1`：测试流程已经执行；
 - `vib_soft_test_failures == 0`：三项测试全部通过；
@@ -111,7 +111,80 @@ LED 调试反馈使用真实接口 `LedPrint()`：UNKNOWN 为 `0x00`（全灭）
 
 - bit0（`0x01`）：门关闭；
 - bit1（`0x02`）：门打开；
-- bit2（`0x04`）：存在未消费 Vib 事件；Vib 软件测试模式下也表示测试已完成且无失败；
+- bit2（`0x04`）：Vib 报警来源；独立 Vib 软件测试模式下也表示测试已完成且无失败；
 - 门状态 UNKNOWN 且没有 Vib 指示时为 `0x00`。
 
 Hall 和 Vib 回调均不直接更新 LED，因此不会互相覆盖显示。
+
+## Security State Machine
+
+A 板安全状态机包含：
+
+- `SECURITY_STATE_DISARMED`：默认撤防状态，持续更新传感器状态，但消费并丢弃 pending 门变化和 Vib 事件；
+- `SECURITY_STATE_ARMED`：布防状态，等待门打开或 Vib 事件；
+- `SECURITY_STATE_ALARM`：锁存报警状态，只能通过撤防或满足条件的报警复位退出。
+
+业务控制函数与未来 UART 传输层解耦：
+
+- `security_arm()`：只有 `door_state == DOOR_STATE_CLOSED` 才允许布防；UNKNOWN 和 OPEN 均拒绝；
+- `security_disarm()`：从任意状态进入 DISARMED，清除报警原因和 pending 事件，但保留真实门状态；
+- `security_reset_alarm()`：只有处于 ALARM 且门已 CLOSED 时才清除报警并重新进入 ARMED；门为 OPEN 或 UNKNOWN 时拒绝。
+
+报警原因采用位标志，可同时保存多个来源：
+
+```text
+ALARM_FLAG_NONE = 0x00
+ALARM_FLAG_DOOR = 0x01
+ALARM_FLAG_VIB  = 0x02
+```
+
+`process_security_state()` 由 100 ms 回调调用。ARMED 状态下，门变化为 OPEN 时锁存 DOOR 原因，Vib 事件则锁存 VIB 原因；ALARM 期间的新事件继续补充 `alarm_flags`。DISARMED 状态只消费 pending 事件，不报警。
+
+### 蜂鸣器报警执行层
+
+蜂鸣器使用课程真实接口：`BeepInit()`、`GetBeepStatus()` 和 `SetBeep()`。第一次从非 ALARM 状态进入 ALARM 时设置一次 `alarm_beep_pending`；100 ms 执行层确认蜂鸣器空闲后调用：
+
+```c
+SetBeep(1200, 100);
+```
+
+该组参数来自课程 Vib 示例，表示 1200 Hz、约 1000 ms 的非阻塞提示。调用成功后清除 pending 标志，因此不会每 100 ms 重启蜂鸣器。撤防或成功 RESET 会取消尚未执行的提示；BSP 没有提供已确认的“立即停止当前声音”接口，因此已经开始的提示可能继续到本次时长结束。
+
+### 状态机软件测试
+
+当前测试宏配置：
+
+```c
+#define HALL_SOFT_TEST  0
+#define VIB_SOFT_TEST   0
+#define STATE_SOFT_TEST 1
+```
+
+状态机测试直接调用 Hall/Vib 软件处理函数和安全控制函数，不伪造 BSP。十项测试覆盖：默认撤防、UNKNOWN/OPEN 拒绝布防、CLOSED 成功布防、门报警、撤防、Vib 报警、关门 RESET、开门拒绝 RESET，以及撤防期间旧 Vib 不得污染后续布防。
+
+在 Keil 调试器中观察：
+
+- `state_soft_test_completed == 1`：测试已经执行；
+- `state_soft_test_failures == 0`：十项测试全部通过；
+- 非零结果的 bit0～bit9 分别表示 TEST S1～TEST S10 失败。
+
+正式硬件测试前必须将 `HALL_SOFT_TEST`、`VIB_SOFT_TEST`、`STATE_SOFT_TEST` 全部设置为 `0`，从而恢复真实 Hall/Vib 初始化和事件回调。
+
+### 完成状态
+
+- 状态机软件逻辑：已实现，待 Keil C51 编译和调试执行；
+- 蜂鸣器报警执行层：已实现，待 Keil C51 和实机验证；
+- Hall 物理测试：仍待磁铁；
+- Vib 物理测试：仍待实机确认；
+- UART：尚未实现；
+- Heartbeat：尚未实现。
+
+统一 LED 位分配现为：
+
+```text
+bit0 / 0x01：门关闭
+bit1 / 0x02：门打开
+bit2 / 0x04：Vib 报警来源
+bit3 / 0x08：ARMED
+bit4 / 0x10：ALARM
+```
