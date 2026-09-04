@@ -1,0 +1,62 @@
+# Keil C51 build artifacts (keep shared project files such as *.uvproj/*.uvprojx)
+Objects/
+Listings/
+*.obj
+*.o
+*.lst
+*.m51
+*.map
+*.hex
+*.bin
+*.axf
+*.elf
+*.lnp
+*.plg
+*.build_log.htm
+*.htm
+*.dep
+*.d
+*.crf
+*.sct
+*.uvguix.*
+*.uvopt
+*.uvoptx
+
+# Qt/C++ build output
+build/
+build-*/
+cmake-build-*/
+out/
+debug/
+release/
+*.pro.user
+*.pro.user.*
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+Makefile
+*.autosave
+
+# Local IDE/editor settings
+.idea/
+.vscode/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Operating-system files
+.DS_Store
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
