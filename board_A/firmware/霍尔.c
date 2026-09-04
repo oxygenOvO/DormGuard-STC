@@ -3,7 +3,7 @@
 #include "hall.H"
 #include "Vib.h"
 #include "Beep.h"
-#include "uart1.h"
+#include "uart2.h"
 #include "displayer.H"
 
 code unsigned long SysClock = 11059200;
@@ -250,10 +250,10 @@ void service_uart_tx(void)
 {
 #if !UART_SOFT_TEST
     if ((uart_tx_count != 0) &&
-        (GetUart1TxStatus() == enumUart1TxFree))
+        (GetUart2TxStatus() == enumUart2TxFree))
     {
         uart_tx_byte = uart_tx_queue[uart_tx_head];
-        if (Uart1Print(&uart_tx_byte, 1) == enumUart1TxOK)
+        if (Uart2Print(&uart_tx_byte, 1) == enumUart2TxOK)
         {
             uart_tx_head++;
             if (uart_tx_head >= UART_TX_QUEUE_SIZE)
@@ -336,7 +336,7 @@ void process_protocol_reports(void)
     }
 }
 
-void uart1_receive_callback(void)
+void uart_receive_callback(void)
 {
     process_uart_command(uart_rx_byte);
 }
@@ -826,7 +826,7 @@ void main(void)
 #else
     HallInit();
     VibInit();
-    Uart1Init(UART_BAUD_RATE);
+    Uart2Init(UART_BAUD_RATE, Uart2UsedforEXT);
 #endif
     SetDisplayerArea(0, 7);
     Seg7Print(10, 10, 10, 10, 10, 10, 10, 10);
@@ -836,9 +836,9 @@ void main(void)
 #if (!HALL_SOFT_TEST) && (!VIB_SOFT_TEST) && (!STATE_SOFT_TEST) && (!UART_SOFT_TEST)
     SetEventCallBack(enumEventHall, hall_callback);
     SetEventCallBack(enumEventVib, vib_callback);
-    SetEventCallBack(enumEventUart1Rxd, uart1_receive_callback);
+    SetEventCallBack(enumEventUart2Rxd, uart_receive_callback);
     SetEventCallBack(enumEventSys1S, heartbeat_1s_callback);
-    SetUart1Rxd(&uart_rx_byte, 1, 0, 0);
+    SetUart2Rxd(&uart_rx_byte, 1, 0, 0);
 #endif
 
     MySTC_Init();

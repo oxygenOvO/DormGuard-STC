@@ -177,8 +177,8 @@ SetBeep(1200, 100);
 - 蜂鸣器报警执行层：已实现，待 Keil C51 和实机验证；
 - Hall 物理测试：仍待磁铁；
 - Vib 物理测试：仍待实机确认；
-- UART：协议接入和软件测试已实现，双板联调待完成；
-- Heartbeat：尚未实现。
+- UART：协议接入和软件测试已实现，物理层已迁移到 UART2/EXT，双板联调待完成；
+- Heartbeat：已实现，实机接收与掉线联调待完成。
 
 统一 LED 位分配现为：
 
@@ -192,15 +192,27 @@ bit4 / 0x10：ALARM
 
 ## UART Communication
 
-A 板仅通过 UART1 与 B 板通信，PC 不直接连接 A 板。当前沿用课程完整 BSP 示例中实际使用的 `1200 bps`，通信格式由 BSP 固定为 8 数据位、1 停止位、无奇偶校验。B 板必须使用完全相同的串口配置。
+A 板通过 UART2 的 EXT TTL 接口与 B 板通信，PC 不直接连接 A 板。B 板总体上应使用 UART2/EXT 与 A 板连接，并将 UART1/USB 保留给 PC 上位机。当前沿用课程双机 UART2 示例中已经使用的 `1200 bps`；通信格式由 BSP 固定为 8 数据位、1 停止位、无奇偶校验。A、B 两板必须使用完全相同的串口配置。
+
+课程 BSP 文档确认：UART1 固定连接学习板 USB 接口；UART2 可初始化到 EXT 扩展插座（TTL 全双工）或 485 接口（半双工）。DormGuard 板间直连选择 `Uart2UsedforEXT`，不使用 485 模式，也不调用 `EXTInit()`，以避免 EXT 功能冲突。
 
 真实 BSP 接口：
 
-- `Uart1Init(1200)`：初始化 UART1；
-- `SetUart1Rxd(&uart_rx_byte, 1, 0, 0)`：配置无帧头匹配的单字节接收；
-- `enumEventUart1Rxd`：收到一个字节后的回调事件；
-- `Uart1Print(&uart_tx_byte, 1)`：非阻塞发送一个字节；
-- `GetUart1TxStatus()`：发送前确认 UART1 空闲。
+- `Uart2Init(1200, Uart2UsedforEXT)`：将 UART2 初始化到 EXT TTL 接口；
+- `SetUart2Rxd(&uart_rx_byte, 1, 0, 0)`：配置无帧头匹配的单字节接收；
+- `enumEventUart2Rxd`：收到一个字节后的回调事件；
+- `Uart2Print(&uart_tx_byte, 1)`：非阻塞发送一个字节；
+- `GetUart2TxStatus()`：发送前确认 UART2 空闲。
+
+板间 TTL 基本连接：
+
+```text
+A 板 EXT UART2 TX -> B 板 EXT UART2 RX
+A 板 EXT UART2 RX <- B 板 EXT UART2 TX
+A 板 GND          <-> B 板 GND
+```
+
+两板 TTL 电平兼容性、EXT 插座上 TX/RX/GND 的具体针脚顺序，以及是否需要跳帽或拨码设置，当前课程文字资料没有给出足够信息，必须按板卡丝印/原理图实机确认。不要把 485 的 A/B 差分端子按上述 TTL 方式交叉连接。
 
 UART 接收回调只读取 BSP 已写入的全局 `uart_rx_byte`，再调用 `process_uart_command()`。命令处理与安全状态机解耦：
 
@@ -209,7 +221,7 @@ UART 接收回调只读取 BSP 已写入的全局 `uart_rx_byte`，再调用 `pr
 - `CMD_RESET (0xA3)`：调用 `security_reset_alarm()`，当前协议没有 RESET 响应；
 - 其他字节：忽略。
 
-发送层使用 8 字节小型非阻塞队列。队列中的全局 `uart_tx_byte` 在 BSP 完成异步发送前保持有效；队列满时递增 `uart_tx_drop_count`。每个100 ms周期最多启动一个新字节发送。
+发送层使用 8 字节小型非阻塞队列。`Uart2Print()` 与 UART1 版本一样是非阻塞调用，因此队列中的全局 `uart_tx_byte` 在 BSP 完成异步发送前保持有效；队列满时递增 `uart_tx_drop_count`。每个100 ms周期最多启动一个新字节发送，迁移后队列和上层协议逻辑不变。
 
 ### 主动上报与去重
 
@@ -260,4 +272,4 @@ UART_SOFT_TEST  = 0
 4. CMD_RESET 没有 RESET_FAILED；
 5. 第一版单字节协议没有校验、序号或 ACK 机制。
 
-UART软件逻辑和心跳调度已经实现，尚未完成 A↔B 实机串口联调。
+UART软件逻辑和心跳调度已经实现，A 板物理层已迁移到 UART2/EXT；尚未完成 A↔B 实机串口联调。课程参考工程在 UART2/485 模式下验证了 1200 bps，BSP 接口本身允许为 EXT 模式设置相同波特率；EXT 模式下的 1200 bps 仍需两板实测确认。
