@@ -74,3 +74,44 @@ LED 调试反馈使用真实接口 `LedPrint()`：UNKNOWN 为 `0x00`（全灭）
 3. 实际安装时 `enumHallGetAway` 是否对应门打开。
 
 软件模拟测试只能验证 DormGuard 状态转换逻辑，不能替代最终磁铁实机测试。
+
+## Vib 振动检测
+
+使用课程 BSP 中已经确认的真实接口：
+
+- `VibInit()`：初始化 Vib 模块；
+- `GetVibAct()`：读取一次性 Vib 事件，读取后事件值恢复为 `enumVibNull`；
+- `enumEventVib`：Vib 事件类型，通过 `SetEventCallBack()` 注册回调；
+- `enumVibNull`：没有新的振动事件；
+- `enumVibQuake`：检测到一次有效振动事件。
+
+真实 `vib_callback()` 只调用一次 `GetVibAct()`，然后将结果交给 `process_vib_action()`。处理层收到 `enumVibQuake` 后设置 `vib_event = 1` 并递增 `vib_event_count`；收到 `enumVibNull` 时不修改事件和计数。本阶段不会触发蜂鸣器或报警状态。
+
+`vib_event` 表示一个尚未消费的振动软件事件。`clear_vib_event()` 用于在测试或未来状态机处理完成后清除该标志。`vib_event_count` 用于累计 BSP 报告的有效振动次数。
+
+当前 `VIB_SOFT_TEST` 为 `1`，内置三项软件测试：首次 Quake、消费后再次 Quake、Null 不误触发。在 Keil 调试器中观察：
+
+- `vib_soft_test_completed == 1`：测试流程已经执行；
+- `vib_soft_test_failures == 0`：三项测试全部通过；
+- 非零结果的 bit0～bit2 分别表示 TEST V1～TEST V3 失败。
+
+关闭软件测试时，将 `VIB_SOFT_TEST` 改为 `0`。工程将执行 `VibInit()` 并注册真实 `enumEventVib` 回调。真实 Vib 硬件触发灵敏度和事件表现仍需实机验证。
+
+## A 板感知层状态
+
+- Hall：门状态检测软件层已实现，磁铁物理测试待完成；
+- Vib：振动事件软件层已实现，软件测试等待 Keil 验证，真实硬件测试待完成；
+- 状态机：尚未实现；
+- UART：尚未实现；
+- Heartbeat：尚未实现。
+
+## LED 位分配
+
+100 ms 周期回调统一构造一个 `led_value`，并且只调用一次 `LedPrint()`：
+
+- bit0（`0x01`）：门关闭；
+- bit1（`0x02`）：门打开；
+- bit2（`0x04`）：存在未消费 Vib 事件；Vib 软件测试模式下也表示测试已完成且无失败；
+- 门状态 UNKNOWN 且没有 Vib 指示时为 `0x00`。
+
+Hall 和 Vib 回调均不直接更新 LED，因此不会互相覆盖显示。
